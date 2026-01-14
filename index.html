@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Draggable Overlay Video Editor</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #222;
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+  }
+  #videoPreview {
+    display: none;
+  }
+  #canvasContainer {
+    position: relative;
+  }
+  #canvas {
+    border: 2px solid #fff;
+    background-color: #444;
+    cursor: grab;
+  }
+  .buttons {
+    margin-top: 10px;
+    display: flex;
+    gap: 10px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Drag & Overlay Video Editor</h1>
+
+<!-- Buttons to load files -->
+<div>
+  <button id="dropVideoBtn">Drop Video</button>
+  <button id="dropImageBtn">Drop Image</button>
+  <button id="dropGifBtn">Drop GIF</button>
+</div>
+<!-- Hidden file inputs -->
+<input type="file" id="videoInput" accept="video/*" />
+<input type="file" id="imageInput" accept="image/*" />
+<input type="file" id="gifInput" accept="image/gif" />
+
+<div id="canvasContainer">
+  <canvas id="canvas" width="640" height="360"></canvas>
+</div>
+
+<!-- Recording controls -->
+<div class="buttons">
+  <button id="startBtn">Start Recording</button>
+  <button id="stopBtn" disabled>Stop & Download</button>
+</div>
+
+<script>
+const dropVideoBtn = document.getElementById('dropVideoBtn');
+const dropImageBtn = document.getElementById('dropImageBtn');
+const dropGifBtn = document.getElementById('dropGifBtn');
+
+const videoInput = document.getElementById('videoInput');
+const imageInput = document.getElementById('imageInput');
+const gifInput = document.getElementById('gifInput');
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+
+let videoFileUrl = null;
+let overlayImage = null;
+let overlayGifFrames = [];
+let overlayX = 50;
+let overlayY = 50;
+let overlayWidth = 100;
+let overlayHeight = 100;
+
+// Drag variables
+let isDragging = false;
+let dragOffsetX = 0;
+let dragOffsetY = 0;
+
+// Load functions
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      resolve(img);
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+// Load GIF frames (simplified: use first frame)
+async function loadGifFrames(file) {
+  const img = await loadImage(file);
+  return [img];
+}
+
+// Button handlers
+dropVideoBtn.onclick = () => document.getElementById('videoInput').click();
+dropImageBtn.onclick = () => document.getElementById('imageInput').click();
+dropGifBtn.onclick = () => document.getElementById('gifInput').click();
+
+videoInput.onchange = () => {
+  if (videoInput.files.length > 0) {
+    if (videoFileUrl) URL.revokeObjectURL(videoFileUrl);
+    videoFileUrl = URL.createObjectURL(videoInput.files[0]);
+  }
+};
+
+imageInput.onchange = async () => {
+  if (imageInput.files.length > 0) {
+    overlayImage = await loadImage(imageInput.files[0]);
+  }
+};
+
+gifInput.onchange = async () => {
+  if (gifInput.files.length > 0) {
+    overlayGifFrames = await loadGifFrames(gifInput.files[0]);
+  }
+};
+
+// Drag & Drop on canvas
+canvas.addEventListener('mousedown', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+
+  // Check if mouse is over overlay
+  if (
+    mouseX >= overlayX &&
+    mouseX <= overlayX + overlayWidth &&
+    mouseY >= overlayY &&
+    mouseY <= overlayY + overlayHeight
+  ) {
+    isDragging = true;
+    dragOffsetX = mouseX - overlayX;
+    dragOffsetY = mouseY - overlayY;
+  }
+});
+
+canvas.addEventListener('mouseup', () => {
+  isDragging = false;
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (isDragging) {
+    const rect = canvas.getBoundingClientRect();
+    overlayX = e.clientX - rect.left - dragOffsetX;
+    overlayY = e.clientY - rect.top - dragOffsetY;
+  }
+});
+
+// Start recording
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+
+document.getElementById('startBtn').onclick = () => {
+  if (!videoFileUrl) {
+    alert('Please load a video first.');
+    return;
+  }
+  startRecording();
+};
+
+document.getElementById('stopBtn').onclick = () => {
+  stopRecording();
+};
+
+async function startRecording() {
+  isRecording = true;
+  recordedChunks = [];
+  // Create a hidden video element to play the source
+  const videoEl = document.createElement('video');
+  videoEl.src = videoFileUrl;
+  await videoEl.play();
+
+  const stream = canvas.captureStream(30);
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'edited_video.webm';
+    a.click();
+  };
+  mediaRecorder.start();
+
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  // Draw frames
+  await drawVideoFrames(videoEl);
+}
+
+async function drawVideoFrames(videoEl) {
+  // Wait until video is ready
+  await new Promise((resolve) => {
+    if (videoEl.readyState >= 2) resolve();
+    else videoEl.onloadeddata = resolve;
+  });
+  videoEl.currentTime = 0;
+
+  while (isRecording && !videoEl.ended) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+    // Draw overlay image
+    if (overlayImage) {
+      ctx.drawImage(overlayImage, overlayX, overlayY, overlayWidth, overlayHeight);
+    }
+    // Draw first frame of GIF
+    if (overlayGifFrames.length > 0) {
+      ctx.drawImage(overlayGifFrames[0], overlayX, overlayY, overlayWidth, overlayHeight);
+    }
+    await new Promise((r) => setTimeout(r, 1000 / 30));
+  }
+  videoEl.pause();
+}
+
+function stopRecording() {
+  if (mediaRecorder && isRecording) {
+    mediaRecorder.stop();
+    isRecording = false;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  }
+}
+</script>
+
+</body>
+</html>
